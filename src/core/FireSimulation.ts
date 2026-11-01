@@ -1,196 +1,148 @@
-import type { Vector2 } from "../Utils/Vector2";
-import { normalize } from "../Utils/Vector2";
-import { MathAddon } from "../Utils/MathAddon";
+import { clamp } from '../utils/math'
+import { normalize, type Vector2 } from '../utils/vector2'
 
 export enum FireState {
-    Unburned = 0,
-    Burning = 1,
-    Burned = 2,
+  Unburned = 0,
+  Burning = 1,
+  Burned = 2,
 }
 
-const BASE_SPREAD_PROBABILITY = .3;
-const BASE_WIND_STRENGTH = .5;
-/**
- * Soil Map
- *
- *  We can set soil dryness like :
- *  0 : fully wet
- *  1 : fully dry
- *
- * Fire Map:
- *
- * 0 : Unburned
- * 1 : Burning
- * 2 : Burned
- *
- *
- */
+export type SimulationSettings = {
+  windDirection: Vector2
+  windStrength: number
+  soilDryness: number
+}
+
+const BASE_SPREAD_PROBABILITY = 0.3
+const NEIGHBOR_DIRECTIONS: Vector2[] = [
+  { x: -1, y: -1 },
+  { x: 0, y: -1 },
+  { x: 1, y: -1 },
+  { x: -1, y: 0 },
+  { x: 1, y: 0 },
+  { x: -1, y: 1 },
+  { x: 0, y: 1 },
+  { x: 1, y: 1 },
+]
+
 export class FireSimulation {
-    private static DIRECTIONS: Vector2[] = [
-        {x: 0, y: -1},
-        {x: -1, y: 0},
-        {x: -1, y: 1},
+  readonly width: number
+  readonly height: number
+  private windDirection: Vector2
+  private windStrength: number
+  private soilDryness: number
+  private readonly soilMap: Float32Array
+  private readonly fireMap: Uint8Array
+  private activeFireIndices: number[] = []
 
-        {x: -1, y: -1},
-        {x: 1, y: -1},
-
-        {x: 0, y: 1},
-        {x: 1, y: 0},
-        {x: 1, y: 1},
-    ]
-
-    private _width: number;
-    private _height: number;
-
-    private windDirection: Vector2;
-
-    private soilMap: Float32Array;
-    private fireMap: Uint8Array;
-    private activeFireIndices: number[];
-    private spreadProbability: number;
-    private soilDryness: number;
-
-
-    constructor(
-        _width: number,
-        _height: number,
-        windDirection: Vector2,
-    ) {
-        this._width = _width;
-        this._height = _height;
-        this.windDirection = windDirection;
-
-        this.soilDryness = .1
-        const cellCount = _width * _height;
-        this.soilMap = new Float32Array(cellCount);
-        this.generateSoil();
-        this.fireMap = new Uint8Array(cellCount);
-        this.activeFireIndices = [];
-        this.spreadProbability = BASE_SPREAD_PROBABILITY;
+  constructor(width: number, height: number, settings: SimulationSettings) {
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+      throw new RangeError('Grid dimensions must be positive integers.')
     }
 
-    get width() {
-        return this._width;
+    this.width = width
+    this.height = height
+    this.windDirection = normalize(settings.windDirection)
+    this.windStrength = clamp(settings.windStrength, 0, 1)
+    this.soilDryness = clamp(settings.soilDryness, 0, 1)
+    this.soilMap = new Float32Array(width * height)
+    this.fireMap = new Uint8Array(width * height)
+    this.generateSoil()
+  }
+
+  get hasActiveFire(): boolean {
+    return this.activeFireIndices.length > 0
+  }
+
+  setWindDirection(direction: Vector2): void {
+    this.windDirection = normalize(direction)
+  }
+
+  setWindStrength(strength: number): void {
+    this.windStrength = clamp(strength, 0, 1)
+  }
+
+  setSoilDryness(dryness: number): void {
+    this.soilDryness = clamp(dryness, 0, 1)
+  }
+
+  getSoil(x: number, y: number): number {
+    return this.getSoilAt(this.getIndexOf(x, y))
+  }
+
+  getFireState(x: number, y: number): FireState {
+    return this.fireMap[this.getIndexOf(x, y)] as FireState
+  }
+
+  ignite(x: number, y: number): void {
+    if (!this.isInside(x, y) || this.getFireState(x, y) !== FireState.Unburned) return
+
+    const index = this.getIndexOf(x, y)
+    this.fireMap[index] = FireState.Burning
+    this.activeFireIndices.push(index)
+  }
+
+  step(): void {
+    const nextActiveFireIndices: number[] = []
+
+    for (const index of this.activeFireIndices) {
+      nextActiveFireIndices.push(...this.spreadFrom(index))
+      this.fireMap[index] = FireState.Burned
     }
 
-    get height() {
-        return this._height;
+    this.activeFireIndices = nextActiveFireIndices
+  }
+
+  private generateSoil(): void {
+    for (let index = 0; index < this.soilMap.length; index++) {
+      this.soilMap[index] = Math.random()
+    }
+  }
+
+  private getSoilAt(index: number): number {
+    const variation = Math.min(this.soilDryness, 1 - this.soilDryness)
+    return this.soilDryness + (this.soilMap[index] * 2 - 1) * variation
+  }
+
+  private getIndexOf(x: number, y: number): number {
+    return y * this.width + x
+  }
+
+  private isInside(x: number, y: number): boolean {
+    return Number.isInteger(x) && Number.isInteger(y)
+      && x >= 0 && x < this.width && y >= 0 && y < this.height
+  }
+
+  private spreadFrom(index: number): number[] {
+    const burningX = index % this.width
+    const burningY = Math.floor(index / this.width)
+    const ignitedIndices: number[] = []
+
+    for (const direction of NEIGHBOR_DIRECTIONS) {
+      const neighborX = burningX + direction.x
+      const neighborY = burningY + direction.y
+
+      if (!this.isInside(neighborX, neighborY)) continue
+      if (this.getFireState(neighborX, neighborY) !== FireState.Unburned) continue
+
+      const neighborIndex = this.getIndexOf(neighborX, neighborY)
+      const spreadProbability = this.computeSpreadProbability(neighborIndex, direction)
+
+      if (Math.random() >= spreadProbability) continue
+
+      this.fireMap[neighborIndex] = FireState.Burning
+      ignitedIndices.push(neighborIndex)
     }
 
-    private generateSoil() {
-        for(let i = 0; i < this.width*this.height; i++) {
-            this.soilMap[i] = (MathAddon.clamp(Math.random() + this.soilDryness, 0, 1));
-        }
-    }
+    return ignitedIndices
+  }
 
-    public getSoil(x: number, y:number) {
-        const index = this.getIndexOf(x,y);
+  private computeSpreadProbability(targetIndex: number, spreadDirection: Vector2): number {
+    const direction = normalize(spreadDirection)
+    const windAlignment = direction.x * this.windDirection.x + direction.y * this.windDirection.y
+    const windMultiplier = 1 + windAlignment * this.windStrength
+    const dryness = this.getSoilAt(targetIndex)
 
-        return this.soilMap[index];
-    }
-
-    public getFireState(x: number, y: number) {
-        const index = this.getIndexOf(x, y);
-        return this.getFireStateAt(index);
-    }
-
-    private getIndexOf(x: number, y: number): number {
-        return y * this._width + x;
-    }
-
-    private getCoordOf(index: number): {x: number, y: number} {
-        return {
-            x: index % this._width,
-            y: Math.floor(index / this._width)
-        }
-    }
-
-    private isInside(x: number, y: number): boolean {
-        return x >= 0 && x < this._width && y >= 0 && y < this._height;
-    }
-
-    public ignite(x: number, y: number) {
-        const index = this.getIndexOf(x, y);
-
-        if(this.getFireStateAt(index) !== FireState.Unburned) {
-            return;
-        }
-
-        this.setFireStateAt(index, FireState.Burning);
-        this.activeFireIndices.push(index);
-    }
-
-    private setFireStateAt(index: number, state: FireState) {
-        this.fireMap[index] = state;
-    }
-
-    public step() {
-        let nextActiveFireIndices: number[] = [];
-        for(const index of this.activeFireIndices) {
-            this.spreadFrom(index, nextActiveFireIndices);
-            this.fireMap[index] = FireState.Burned;
-        }
-        console.log(nextActiveFireIndices);
-        console.log(this.activeFireIndices);
-        this.activeFireIndices = nextActiveFireIndices;
-    }
-
-    private getFireStateAt(index: number): FireState {
-        return this.fireMap[index] as FireState;
-    }
-
-    private canIgnite(index: number) {
-        const fireState = this.getFireStateAt(index);
-        const dryness = this.soilMap[index];
-
-        return fireState == FireState.Unburned && dryness > 0;
-    }
-
-    private spreadFrom(index: number, nextActiveFireIndices: number[]): void {
-        let burningPosition = this.getCoordOf(index);
-
-        for(const direction of FireSimulation.DIRECTIONS) {
-            let n_x = burningPosition.x + direction.x
-            let n_y = burningPosition.y + direction.y
-            console.log(n_x, n_y)
-            if(!this.isInside(n_x, n_y)) {
-                console.log("not inside");
-                continue;
-            }
-
-            const neighborIndex = this.getIndexOf(n_x, n_y);
-
-            if(!this.canIgnite(neighborIndex)) {
-                console.log(`can't ignite`)
-                continue;
-            }
-
-            const spreadProbability = this.computeSpreadProbability(neighborIndex, direction);
-
-            console.log("spread Probability : ", spreadProbability)
-            if(Math.random() >= spreadProbability) {
-                continue;
-            }
-
-            this.fireMap[neighborIndex] = FireState.Burning;
-            nextActiveFireIndices.push(neighborIndex);
-        }
-    }
-
-    private computeSpreadProbability(
-        targetIndex: number,
-        spreadDirection: Vector2,
-    ): number {
-        const dryness = this.soilMap[targetIndex];
-
-        spreadDirection = normalize(spreadDirection);
-        const windAlignment = spreadDirection.x * this.windDirection.x + spreadDirection.y * this.windDirection.y;
-          console.log("wind Alignment : ", windAlignment);
-        const windStrength = BASE_WIND_STRENGTH;
-        const windMultiplier = 1 + windAlignment + windStrength;
-
-        console.log("Spread Probability before clamping : ", this.spreadProbability * windMultiplier * dryness);
-        return MathAddon.clamp(this.spreadProbability * windMultiplier * dryness, 0, 1);
-    }
-
+    return clamp(BASE_SPREAD_PROBABILITY * windMultiplier * dryness, 0, 1)
+  }
 }

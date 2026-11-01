@@ -1,9 +1,12 @@
-import FireGrid from "./Components/FireGrid"
+import FireGrid from './components/FireGrid'
+import './App.css'
 
 function App() {
-
   return (
-    <FireGrid></FireGrid>
+    <main className="app">
+      <h1>Fire simulation</h1>
+      <FireGrid />
+    </main>
   )
 }
 
